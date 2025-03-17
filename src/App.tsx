@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import VideoChat from './components/VideoChat';
 import JoinRoom from './components/JoinRoom';
-import { Video, VideoOff, Phone, PhoneOff, Mic, MicOff } from 'lucide-react';
+import { Video} from 'lucide-react';
 
 function App() {
   const [username, setUsername] = useState<string>('');
