@@ -16,19 +16,19 @@ const activeUsers = {};
 
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
-  
+
   // User joins with their username
   socket.on('join', (username) => {
     console.log(`${username} joined with ID: ${socket.id}`);
     activeUsers[socket.id] = username;
-    
+
     // Broadcast updated user list to all clients
     io.emit('activeUsers', Object.entries(activeUsers).map(([id, name]) => ({
       id,
       username: name
     })));
   });
-  
+
   // Handle call request
   socket.on('callUser', ({ userToCall, signalData, name }) => {
     console.log(`${name} is calling ${activeUsers[userToCall]}`);
@@ -36,13 +36,13 @@ io.on('connection', (socket) => {
       signal: signalData,
     });
   });
-  
+
   // Handle accepting call
   socket.on('answerCall', (data) => {
     console.log(`Call answered by ${activeUsers[socket.id]}`);
     io.to(data.to).emit('callAccepted', data.signal);
   });
-  
+
   // Handle ICE candidates exchange
   socket.on('ice-candidate', ({ target, candidate }) => {
     io.to(target).emit('ice-candidate', {
@@ -50,18 +50,18 @@ io.on('connection', (socket) => {
       candidate
     });
   });
-  
+
   // Handle call end
   socket.on('endCall', ({ to }) => {
     console.log(`Call ended by ${activeUsers[socket.id]}`);
     io.to(to).emit('callEnded');
   });
-  
+
   // Handle disconnection
   socket.on('disconnect', () => {
     console.log(`User disconnected: ${activeUsers[socket.id]}`);
     delete activeUsers[socket.id];
-    
+
     // Broadcast updated user list
     io.emit('activeUsers', Object.entries(activeUsers).map(([id, name]) => ({
       id,

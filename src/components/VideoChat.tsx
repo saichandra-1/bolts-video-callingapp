@@ -27,7 +27,7 @@ const VideoChat: React.FC<VideoChatProps> = ({ username }) => {
   
   // Initialize socket connection
   useEffect(() => {
-    const newSocket = io('http://localhost:3000');
+    const newSocket = io("socketio-videocall-server-production.up.railway.app");
     setSocket(newSocket);
     
     return () => {
