@@ -17,6 +17,7 @@ const VideoChat: React.FC<VideoChatProps> = ({ username, roomId }) => {
   const remoteVideoRefs = useRef<Record<string, React.RefObject<HTMLVideoElement>>>({});
   const peerConnections = useRef<Record<string, RTCPeerConnection>>({});
   const localStreamRef = useRef<MediaStream | null>(null);
+  const iceCandidateQueues = useRef<Record<string, RTCIceCandidateInit[]>>({}); // Queue for ICE candidates
 
   // Initialize local media stream
   useEffect(() => {
@@ -70,49 +71,92 @@ const VideoChat: React.FC<VideoChatProps> = ({ username, roomId }) => {
         }
       };
 
+      // Initialize ICE candidate queue for this peer
+      iceCandidateQueues.current[userId] = [];
+
       peerConnections.current[userId] = pc;
       return pc;
     };
 
+    const processIceCandidates = (userId: string) => {
+      const pc = peerConnections.current[userId];
+      if (pc && pc.remoteDescription && iceCandidateQueues.current[userId]?.length) {
+        iceCandidateQueues.current[userId].forEach(candidate => {
+          pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(err =>
+            console.error(`Error adding ICE candidate for ${userId}:`, err)
+          );
+        });
+        iceCandidateQueues.current[userId] = []; // Clear the queue
+      }
+    };
+
     socket.on('user-connected', async (userId: string) => {
       const pc = createPeerConnection(userId);
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      socket.emit('offer', { roomId, offer });
-      setRemoteUsers(prev => [...prev, userId]);
+      try {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        socket.emit('offer', { roomId, offer });
+        setRemoteUsers(prev => [...new Set([...prev, userId])]); // Avoid duplicates
+      } catch (err) {
+        console.error(`Error creating offer for ${userId}:`, err);
+      }
     });
 
     socket.on('current-users', (users: string[]) => {
       users.forEach(async (userId) => {
-        const pc = createPeerConnection(userId);
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        socket.emit('offer', { roomId, offer });
-        setRemoteUsers(prev => [...prev, userId]);
+        if (!peerConnections.current[userId]) {
+          const pc = createPeerConnection(userId);
+          try {
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            socket.emit('offer', { roomId, offer });
+            setRemoteUsers(prev => [...new Set([...prev, userId])]);
+          } catch (err) {
+            console.error(`Error creating offer for existing user ${userId}:`, err);
+          }
+        }
       });
     });
 
     socket.on('offer', async ({ offer, from }: { offer: RTCSessionDescriptionInit; from: string }) => {
-      if (!peerConnections.current[from]) {
-        const pc = createPeerConnection(from);
+      let pc = peerConnections.current[from];
+      if (!pc) {
+        pc = createPeerConnection(from);
+      }
+      try {
         await pc.setRemoteDescription(new RTCSessionDescription(offer));
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         socket.emit('answer', { roomId, answer });
-        setRemoteUsers(prev => [...prev, from]);
+        setRemoteUsers(prev => [...new Set([...prev, from])]);
+        processIceCandidates(from); // Process any queued ICE candidates
+      } catch (err) {
+        console.error(`Error handling offer from ${from}:`, err);
       }
     });
 
-    socket.on('answer', ({ answer, from }: { answer: RTCSessionDescriptionInit; from: string }) => {
+    socket.on('answer', async ({ answer, from }: { answer: RTCSessionDescriptionInit; from: string }) => {
       const pc = peerConnections.current[from];
       if (pc) {
-        pc.setRemoteDescription(new RTCSessionDescription(answer));
+        try {
+          await pc.setRemoteDescription(new RTCSessionDescription(answer));
+          processIceCandidates(from); // Process any queued ICE candidates
+        } catch (err) {
+          console.error(`Error handling answer from ${from}:`, err);
+        }
       }
     });
 
     socket.on('ice-candidate', ({ candidate }: { candidate: RTCIceCandidateInit }) => {
-      Object.values(peerConnections.current).forEach(pc => {
-        pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(err => console.error(err));
+      Object.entries(peerConnections.current).forEach(([userId, pc]) => {
+        if (pc.remoteDescription) {
+          pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(err =>
+            console.error(`Error adding ICE candidate for ${userId}:`, err)
+          );
+        } else {
+          // Queue the candidate if remote description isn’t set yet
+          iceCandidateQueues.current[userId].push(candidate);
+        }
       });
     });
 
@@ -121,6 +165,7 @@ const VideoChat: React.FC<VideoChatProps> = ({ username, roomId }) => {
         peerConnections.current[userId].close();
         delete peerConnections.current[userId];
         delete remoteVideoRefs.current[userId];
+        delete iceCandidateQueues.current[userId];
         setRemoteUsers(prev => prev.filter(id => id !== userId));
       }
     });
@@ -158,7 +203,7 @@ const VideoChat: React.FC<VideoChatProps> = ({ username, roomId }) => {
     }
     Object.values(peerConnections.current).forEach(pc => pc.close());
     socket.disconnect();
-    window.location.reload(); // Reset the page
+    window.location.reload();
   };
 
   return (
