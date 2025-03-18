@@ -17,7 +17,8 @@ const VideoChat: React.FC<VideoChatProps> = ({ username, roomId }) => {
   const remoteVideoRefs = useRef<Record<string, React.RefObject<HTMLVideoElement>>>({});
   const peerConnections = useRef<Record<string, RTCPeerConnection>>({});
   const localStreamRef = useRef<MediaStream | null>(null);
-  const iceCandidateQueues = useRef<Record<string, RTCIceCandidateInit[]>>({}); // Queue for ICE candidates
+  const iceCandidateQueues = useRef<Record<string, RTCIceCandidateInit[]>>({});
+  const hasNegotiated = useRef<Record<string, boolean>>({}); // Track negotiation state
 
   // Initialize local media stream
   useEffect(() => {
@@ -71,9 +72,8 @@ const VideoChat: React.FC<VideoChatProps> = ({ username, roomId }) => {
         }
       };
 
-      // Initialize ICE candidate queue for this peer
       iceCandidateQueues.current[userId] = [];
-
+      hasNegotiated.current[userId] = false; // Initialize negotiation state
       peerConnections.current[userId] = pc;
       return pc;
     };
@@ -86,25 +86,27 @@ const VideoChat: React.FC<VideoChatProps> = ({ username, roomId }) => {
             console.error(`Error adding ICE candidate for ${userId}:`, err)
           );
         });
-        iceCandidateQueues.current[userId] = []; // Clear the queue
+        iceCandidateQueues.current[userId] = [];
       }
     };
 
     socket.on('user-connected', async (userId: string) => {
-      const pc = createPeerConnection(userId);
-      try {
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        socket.emit('offer', { roomId, offer });
-        setRemoteUsers(prev => [...new Set([...prev, userId])]); // Avoid duplicates
-      } catch (err) {
-        console.error(`Error creating offer for ${userId}:`, err);
+      if (!peerConnections.current[userId] && !hasNegotiated.current[userId]) {
+        const pc = createPeerConnection(userId);
+        try {
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          socket.emit('offer', { roomId, offer });
+          setRemoteUsers(prev => [...new Set([...prev, userId])]);
+        } catch (err) {
+          console.error(`Error creating offer for ${userId}:`, err);
+        }
       }
     });
 
     socket.on('current-users', (users: string[]) => {
       users.forEach(async (userId) => {
-        if (!peerConnections.current[userId]) {
+        if (!peerConnections.current[userId] && !hasNegotiated.current[userId]) {
           const pc = createPeerConnection(userId);
           try {
             const offer = await pc.createOffer();
@@ -119,28 +121,34 @@ const VideoChat: React.FC<VideoChatProps> = ({ username, roomId }) => {
     });
 
     socket.on('offer', async ({ offer, from }: { offer: RTCSessionDescriptionInit; from: string }) => {
-      let pc = peerConnections.current[from];
-      if (!pc) {
-        pc = createPeerConnection(from);
-      }
-      try {
-        await pc.setRemoteDescription(new RTCSessionDescription(offer));
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        socket.emit('answer', { roomId, answer });
-        setRemoteUsers(prev => [...new Set([...prev, from])]);
-        processIceCandidates(from); // Process any queued ICE candidates
-      } catch (err) {
-        console.error(`Error handling offer from ${from}:`, err);
+      if (!hasNegotiated.current[from]) {
+        let pc = peerConnections.current[from];
+        if (!pc) {
+          pc = createPeerConnection(from);
+        }
+        try {
+          if (pc.signalingState === 'stable') {
+            await pc.setRemoteDescription(new RTCSessionDescription(offer));
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            socket.emit('answer', { roomId, answer });
+            hasNegotiated.current[from] = true; // Mark as negotiated
+            setRemoteUsers(prev => [...new Set([...prev, from])]);
+            processIceCandidates(from);
+          }
+        } catch (err) {
+          console.error(`Error handling offer from ${from}:`, err);
+        }
       }
     });
 
     socket.on('answer', async ({ answer, from }: { answer: RTCSessionDescriptionInit; from: string }) => {
       const pc = peerConnections.current[from];
-      if (pc) {
+      if (pc && !hasNegotiated.current[from] && pc.signalingState === 'have-local-offer') {
         try {
           await pc.setRemoteDescription(new RTCSessionDescription(answer));
-          processIceCandidates(from); // Process any queued ICE candidates
+          hasNegotiated.current[from] = true; // Mark as negotiated
+          processIceCandidates(from);
         } catch (err) {
           console.error(`Error handling answer from ${from}:`, err);
         }
@@ -154,7 +162,6 @@ const VideoChat: React.FC<VideoChatProps> = ({ username, roomId }) => {
             console.error(`Error adding ICE candidate for ${userId}:`, err)
           );
         } else {
-          // Queue the candidate if remote description isn’t set yet
           iceCandidateQueues.current[userId].push(candidate);
         }
       });
@@ -166,6 +173,7 @@ const VideoChat: React.FC<VideoChatProps> = ({ username, roomId }) => {
         delete peerConnections.current[userId];
         delete remoteVideoRefs.current[userId];
         delete iceCandidateQueues.current[userId];
+        delete hasNegotiated.current[userId];
         setRemoteUsers(prev => prev.filter(id => id !== userId));
       }
     });
