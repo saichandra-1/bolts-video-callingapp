@@ -6,71 +6,44 @@ const app = express();
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
-    origin: '*', // Allow all origins
-    methods: ['GET', 'POST'] // Allow specific methods
-  }
+    origin: 'http://localhost:3000', // Next.js default port
+    methods: ['GET', 'POST'],
+  },
 });
-
-// Store active users
-const activeUsers = {};
 
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
 
-  // User joins with their username
-  socket.on('join', (username) => {
-    console.log(`${username} joined with ID: ${socket.id}`);
-    activeUsers[socket.id] = username;
+  socket.on('join-room', ({ roomId, username }) => {
+    socket.join(roomId);
+    console.log(`${username} joined room ${roomId}`);
+    socket.to(roomId).emit('user-connected', socket.id);
 
-    // Broadcast updated user list to all clients
-    io.emit('activeUsers', Object.entries(activeUsers).map(([id, name]) => ({
-      id,
-      username: name
-    })));
+    const usersInRoom = Array.from(io.sockets.adapter.rooms.get(roomId) || []).filter(
+      (id) => id !== socket.id
+    );
+    socket.emit('current-users', usersInRoom);
   });
 
-  // Handle call request
-  socket.on('callUser', ({ userToCall, signalData, name }) => {
-    console.log(`${name} is calling ${activeUsers[userToCall]}`);
-    io.to(userToCall).emit('callIncoming', {
-      signal: signalData,
-    });
+  socket.on('offer', ({ roomId, offer }) => {
+    socket.to(roomId).emit('offer', { offer, from: socket.id });
   });
 
-  // Handle accepting call
-  socket.on('answerCall', (data) => {
-    console.log(`Call answered by ${activeUsers[socket.id]}`);
-    io.to(data.to).emit('callAccepted', data.signal);
+  socket.on('answer', ({ roomId, answer }) => {
+    socket.to(roomId).emit('answer', { answer, from: socket.id });
   });
 
-  // Handle ICE candidates exchange
-  socket.on('ice-candidate', ({ target, candidate }) => {
-    io.to(target).emit('ice-candidate', {
-      from: socket.id,
-      candidate
-    });
+  socket.on('ice-candidate', ({ roomId, candidate }) => {
+    socket.to(roomId).emit('ice-candidate', { candidate, from: socket.id });
   });
 
-  // Handle call end
-  socket.on('endCall', ({ to }) => {
-    console.log(`Call ended by ${activeUsers[socket.id]}`);
-    io.to(to).emit('callEnded');
-  });
-
-  // Handle disconnection
   socket.on('disconnect', () => {
-    console.log(`User disconnected: ${activeUsers[socket.id]}`);
-    delete activeUsers[socket.id];
-
-    // Broadcast updated user list
-    io.emit('activeUsers', Object.entries(activeUsers).map(([id, name]) => ({
-      id,
-      username: name
-    })));
+    console.log('User disconnected:', socket.id);
+    socket.broadcast.emit('user-disconnected', socket.id);
   });
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 5000;
 httpServer.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
