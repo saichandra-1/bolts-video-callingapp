@@ -30,6 +30,7 @@ const VideoChat: React.FC<VideoChatProps> = ({ username, roomId }) => {
         }
         localStreamRef.current = stream;
       } catch (err) {
+        window.alert('Error accessing media devices:');
         console.error('Error accessing media devices:', err);
       }
     };
@@ -60,6 +61,7 @@ const VideoChat: React.FC<VideoChatProps> = ({ username, roomId }) => {
         if (event.candidate) {
           socket.emit('ice-candidate', { roomId, candidate: event.candidate });
         }
+        console.log("Ice candidate suss: " + event.candidate);
       };
 
       pc.ontrack = (event) => {
